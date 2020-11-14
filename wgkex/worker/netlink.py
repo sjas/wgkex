@@ -1,5 +1,10 @@
+#!/usr/bin/env python3
 import re
+import hashlib
 
+from salt.utils.network import mac2eui64
+from textwrap import wrap
+from typing import Dict, List
 from pyroute2 import WireGuard, IPRoute
 from pyroute2.netlink.rtnl import ndmsg
 from typing import Dict, List
@@ -26,6 +31,43 @@ class WireGuardClient:
     wg_interface: str
     vx_interface: str
     remove: bool
+
+
+# we receive stuff from wgkex-broker
+def generate_lladdr(public_key: str) -> str:
+    m = hashlib.md5()
+
+    m.update(public_key.encode("ascii") + b"\n")
+    hashed_key = m.hexdigest()
+    hash_as_list = wrap(hashed_key, 2)
+    temp_mac = ":".join(["02"] + hash_as_list[:5])
+
+    lladdr = re.sub("\/\d+$", "/128", mac2eui64(mac=temp_mac, prefix="fe80::/10"))
+    return lladdr
+
+
+def generate_interface_names(peer: WireGuardClient) -> WireGuardClient:
+    peer.wg_interface = "wg-" + peer.domain
+    peer.vx_interface = "vx-" + peer.domain
+
+    return peer
+
+
+def cleanup_wireguard_clients(domain: str) -> bool:
+    stale_clients = find_stale_wireguard_clients("wg-" + domain)
+    result = []
+    for stale_client in stale_clients:
+        stale_wireguard_client = WireGuardClient(
+            public_key=stale_client,
+            lladdr=generate_lladdr(stale_client),
+            domain=domain,
+            wg_interface="",
+            vx_interface="",
+            remove=True,
+        )
+        stale_wireguard_client = generate_interface_names(stale_wireguard_client)
+        result = link_handler(stale_wireguard_client)
+    return result
 
 
 # pyroute2 stuff
@@ -78,9 +120,7 @@ def route_handler(client: WireGuardClient) -> Dict:
         action = "del"
 
     return ip.route(
-        action,
-        dst=client.lladdr,
-        oif=ip.link_lookup(ifname=client.wg_interface)[0],
+        action, dst=client.lladdr, oif=ip.link_lookup(ifname=client.wg_interface)[0]
     )
 
 
@@ -89,12 +129,12 @@ def find_stale_wireguard_clients(wg_interface: str) -> List:
 
     clients = wg.info(wg_interface)[0].WGDEVICE_A_PEERS.value
 
-    threeHoursAgo = (datetime.now() - timedelta(hours=3)).timestamp()
+    three_hours_ago = (datetime.now() - timedelta(hours=3)).timestamp()
 
     stale_clients = []
     for client in clients:
         latest_handshake = client.WGPEER_A_LAST_HANDSHAKE_TIME["tv_sec"]
-        if latest_handshake < int(threeHoursAgo):
+        if latest_handshake < int(three_hours_ago):
             stale_clients.append(client.WGPEER_A_PUBLIC_KEY["value"].decode("utf-8"))
 
     return stale_clients
