@@ -11,6 +11,6 @@ setup(
     packages=find_packages(exclude="tests"),
     include_package_data=True,
     zip_safe=False,
-    install_requires=["Flask", "PyYAML", "voluptuous"],
+    install_requires=["Flask", "flask-mqtt", "PyYAML", "voluptuous"],
     setup_requires=["wheel"],
 )
